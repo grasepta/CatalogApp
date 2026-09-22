@@ -1,0 +1,12 @@
+included:
+  - CatalogApp
+  - Modules
+  - CatalogAppTests
+excluded:
+  - CatalogApp.xcodeproj
+  - Modules/**/.build
+line_length: 120
+identifier_name:
+  min_length: 2
+disabled_rules:
+  - trailing_comma

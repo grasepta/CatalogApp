@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build, Lint, and Test
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          for app in \
+            Xcode_26.3.app \
+            Xcode_26.2.app \
+            Xcode_26.1.1.app \
+            Xcode_26.0.1.app \
+            Xcode_16.4.app \
+            Xcode.app
+          do
+            if [ -d "/Applications/$app" ]; then
+              sudo xcode-select -s "/Applications/$app/Contents/Developer"
+              break
+            fi
+          done
+          echo "Selected: $(xcode-select -p)"
+          xcodebuild -version
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project CatalogApp.xcodeproj \
+            -scheme CatalogApp
+
+      - name: SwiftLint
+        run: |
+          if ! command -v swiftlint >/dev/null; then
+            brew install swiftlint
+          fi
+          swiftlint version
+          swiftlint lint --reporter xcode
+
+      - name: Build and Test
+        run: |
+          set -euo pipefail
+          SIMULATOR_NAME="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          data = json.loads(
+              subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"])
+          )
+          preferred = ["iPhone 16", "iPhone 17", "iPhone 15", "iPhone 14"]
+          available = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  name = device.get("name", "")
+                  if device.get("isAvailable") and name.startswith("iPhone"):
+                      available.append(name)
+
+          for name in preferred:
+              if name in available:
+                  print(name)
+                  raise SystemExit(0)
+
+          if available:
+              print(available[0])
+              raise SystemExit(0)
+
+          raise SystemExit("No available iPhone simulator")
+          PY
+          )"
+          echo "Using simulator: ${SIMULATOR_NAME}"
+          xcodebuild \
+            -project CatalogApp.xcodeproj \
+            -scheme CatalogApp \
+            -destination "platform=iOS Simulator,name=${SIMULATOR_NAME}" \
+            -enableCodeCoverage YES \
+            -resultBundlePath TestResults.xcresult \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Code coverage
+        if: success()
+        run: |
+          xcrun xccov view --report --only-targets TestResults.xcresult
